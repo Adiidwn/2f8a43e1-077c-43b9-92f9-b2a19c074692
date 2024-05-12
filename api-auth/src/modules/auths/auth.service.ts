@@ -1,0 +1,235 @@
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { Prisma, User } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
+import { Request, Response } from 'express';
+import * as jwt from 'jsonwebtoken';
+import { AuthLoginDto, AuthRegisterDto, AuthUpdateDto } from 'src/dto/auth.dto';
+import { QueryParams } from 'src/dto/request.dto';
+import { PrismaService } from 'src/prisma.service';
+
+@Injectable()
+export class AuthService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+  ) {}
+
+  async register(registerDto: AuthRegisterDto) {
+    try {
+      const saltRounds = 10;
+
+      const checkEmail = await this.prisma.user.findFirst({
+        where: {
+          email: registerDto.email,
+        },
+      });
+      if (checkEmail) {
+        throw new Error('Email already exists');
+      }
+
+      const bcryptPassword = await bcrypt.hash(
+        registerDto.password,
+        saltRounds,
+      );
+      const user = await this.prisma.user.create({
+        data: {
+          name: registerDto.name,
+          email: registerDto.email,
+          password: bcryptPassword,
+        },
+      });
+
+      if (!user) {
+        throw new Error('Failed to create user');
+      }
+
+      return user;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async findAll(params: QueryParams) {
+    let QueryArr = [];
+
+    const skip = params.per_page * (params.page - 1);
+    const take = params.per_page;
+
+    if (params.username) {
+      QueryArr.push({
+        name: params.username,
+      });
+    }
+
+    const [total_data, datas] = await this.prisma.$transaction([
+      this.prisma.user.count({
+        where: {
+          AND: QueryArr,
+        },
+      }),
+      this.prisma.user.findMany({
+        where: {
+          AND: QueryArr,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          ceatedAt: true,
+        },
+        take,
+        orderBy: {
+          id: params.sort,
+        },
+      }),
+    ]);
+
+    return {
+      datas,
+      total_data,
+    };
+  }
+
+  async login(authLoginDto: AuthLoginDto, res: Response) {
+    try {
+      const checkEmail = await this.prisma.user.findFirst({
+        where: {
+          email: authLoginDto.email,
+        },
+      });
+
+      if (!checkEmail) {
+        return res.status(HttpStatus.UNAUTHORIZED).json({
+          message: 'Invalid email or password',
+        });
+      }
+
+      const passwordMatch = await bcrypt.compare(
+        authLoginDto.password,
+        checkEmail.password,
+      );
+
+      if (!passwordMatch) {
+        throw new Error('Invalid email or password');
+      }
+
+      const payload = {
+        id: checkEmail.id,
+        email: checkEmail.email,
+        name: checkEmail.name,
+        role: checkEmail.role,
+      };
+
+      const token = await this.jwtService.signAsync(
+        { payload },
+        { expiresIn: '10000000h' },
+      );
+      return {
+        payload,
+        access_token: token,
+      };
+    } catch (e) {
+      throw new Error(e);
+    }
+  }
+
+  async authCheck(params: QueryParams, req: Request) {
+    try {
+      const token = req.header('Authorization')?.replace('Bearer ', '');
+      if (!token) {
+        console.error('Token is missing or invalid.');
+      }
+      const compare = jwt.verify(token, process.env.JWT_SECRET) as {
+        payload;
+      };
+      const userId = compare.payload.id;
+
+      const user = await this.prisma.user.findFirst({
+        where: {
+          id: userId,
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+        },
+      });
+
+      return user;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async logout(req: Request, res: Response) {
+    const blackListToken = await this.prisma.blacklistedToken.create({
+      data: {
+        token: req.header('Authorization').replace('Bearer ', ''),
+        expiresAt: new Date(),
+      },
+    });
+
+    return blackListToken;
+  }
+
+  async updateUser(updateDTO: AuthUpdateDto, params: QueryParams, req: any) {
+    try {
+      const token = req.header('Authorization')?.replace('Bearer ', '');
+      if (!token) {
+        console.error('Token is missing or invalid.');
+      }
+
+      const compare = jwt.verify(token, process.env.JWT_SECRET) as {
+        payload: { email: string };
+      };
+      const email = compare.payload.email;
+      if (email !== params.email) console.log('email', email);
+
+      const arrQuery = [];
+      if (params.user_id) {
+        arrQuery.push({
+          id: params.user_id,
+        });
+      }
+
+      if (params.email) {
+        arrQuery.push({
+          email: params.email,
+        });
+      }
+
+      const userData = await this.prisma.user.findFirst({
+        where: {
+          AND: arrQuery,
+        },
+      });
+
+      if (updateDTO.name) {
+        userData.name = updateDTO.name;
+      }
+
+      if (updateDTO.password) {
+        userData.password = updateDTO.password;
+      }
+
+      const update = await this.prisma.user.update({
+        where: { email: userData.email },
+        data: {
+          name: updateDTO.name,
+          password: updateDTO.password,
+        },
+      });
+
+      return update;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async deleteUser(where: Prisma.UserWhereUniqueInput): Promise<User> {
+    return this.prisma.user.delete({ where });
+  }
+}
