@@ -1,6 +1,4 @@
-Project Name Backend Test [Short description or tagline about the project]
-
-Installation [Explain how to install the project. Include any dependencies and steps necessary to get started.]
+Project Name Backend 
 
 ## Description
 
